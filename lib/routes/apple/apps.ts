@@ -117,9 +117,13 @@ async function handler(ctx) {
 
     const icon = new URL('favicon.ico', rootUrl).href;
 
+    ctx.set('json', {
+        appData,
+    });
+
     return {
         item: items,
-        title: `${title} - Apple App Stroe`,
+        title: `${title} - Apple App Store`,
         link: currentUrl,
         description: description?.replace(/\n/g, ' '),
         language: $('html').prop('lang'),
@@ -130,8 +134,4 @@ async function handler(ctx) {
         author: artistName,
         allowEmpty: true,
     };
-
-    ctx.set('json', {
-        appData,
-    });
 }
