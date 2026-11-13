@@ -1,59 +1,82 @@
+import { type CheerioAPI, load } from 'cheerio';
+import pMap from 'p-map';
+
+import type { DataItem } from '@/types';
 import cache from '@/utils/cache';
-// 导入got库，该库用来请求网页数据
-import got from '@/utils/got';
-// 导入cheerio库，该库用来解析网页数据
-import { load } from 'cheerio';
-// 导入parseDate函数，该函数用于日期处理
+import ofetch from '@/utils/ofetch';
 import { parseDate } from '@/utils/parse-date';
-// 导入timezone库，该库用于时区处理
 import timezone from '@/utils/timezone';
 
-async function getItems(ctx, url, host, tableClass, timeStyleClass1, titleStyleClass, timeStyleClass2) {
-    // 发起Http请求，获取网页数据
-    const response = await got({ url, https: { rejectUnauthorized: false } });
-    // 解析网页数据
-    const $ = load(response.data);
+const FALLBACK_DESCRIPTION = '该通知无法直接预览，请点击原文链接↑查看';
 
-    // 通知公告的items的标题、url链接、发布日期
-    const list = $(`table.${tableClass} > tbody > tr[height=20]`)
-        .toArray()
-        .map((item) => {
-            const currentItem = $(item); // 获取当前tr元素的jQuery对象
-            const item1 = currentItem.find('td:eq(1)'); // 获取当前tr元素下的第二个td
-            const item2 = currentItem.find('td:eq(2)'); // 获取当前tr元素下的第三个td
-            const link = new URL(item1.find('a').attr('href'), host).href;
-
-            return {
-                title: item1.find('a').attr('title'),
-                link,
-                pubDate: timezone(parseDate(item2.find(`.${timeStyleClass1}`).text(), 'YYYY-MM-DD'), +8),
-            };
-        });
-
-    const out = await Promise.all(
-        list.map((item) =>
-            // 使用缓存
-            cache.tryGet(item.link, async () => {
-                const response = await got({ url: item.link, https: { rejectUnauthorized: false } });
-                if (response.redirectUrls.length) {
-                    item.link = response.redirectUrls[0];
-                    item.description = '该通知无法直接预览，请点击原文链接↑查看';
-                } else {
-                    const $ = load(response.data);
-                    item.title = $(`.${titleStyleClass}`).text();
-                    item.description = $('.v_news_content')
-                        .html()
-                        .replaceAll('src="/', `src="${new URL('.', host).href}`)
-                        .replaceAll('href="/', `href="${new URL('.', host).href}`)
-                        .trim();
-                    item.pubDate = timezone(parseDate($(`.${timeStyleClass2}`).text().replace('发布时间：', '')), +8);
-                }
-                return item;
-            })
-        )
-    );
-
-    return out;
+interface NoticeItem extends DataItem {
+    link: string;
 }
 
-export { getItems };
+interface DetailSelectors {
+    title: string;
+    content: string;
+    date?: string;
+}
+
+// Date formats vary across sites: 2026-03-30, 2026/05/06 or 2026年03月30日 14:37, often prefixed with a label such as "发布时间："
+function parsePubDate(text?: string): Date | undefined {
+    const match = text?.match(/(\d{4})[-/.年]\s*(\d{1,2})[-/.月]\s*(\d{1,2})/);
+    if (!match) {
+        return undefined;
+    }
+    const [, year, month, day] = match;
+    const time = text?.match(/(\d{1,2}:\d{2}(?::\d{2})?)/)?.[1];
+    return timezone(parseDate(`${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}${time ? ` ${time}` : ''}`), 8);
+}
+
+export function parseNoticeList($: CheerioAPI, pageUrl: string, rowSelector: string, dateSelector: string): NoticeItem[] {
+    return $(rowSelector)
+        .toArray()
+        .map((el) => {
+            const $row = $(el);
+            const $link = $row.find('a');
+            const href = $link.attr('href');
+            if (!href) {
+                return null;
+            }
+            return {
+                title: $link.attr('title') || $link.text().trim(),
+                link: new URL(href, pageUrl).href,
+                pubDate: parsePubDate($(dateSelector, $row).text()),
+            };
+        })
+        .filter((item) => item !== null);
+}
+
+async function fetchArticle(item: NoticeItem, selectors: DetailSelectors): Promise<DataItem> {
+    const response = await ofetch(item.link);
+    const $ = load(response);
+
+    const $content = $(selectors.content);
+    const pdfScript = $('script:contains("showVsbpdfIframe")').first().text();
+    const pdfSource = pdfScript.match(/showVsbpdfIframe\(\s*(["'])(.*?)\1/)?.[2];
+    if (pdfScript && !pdfSource) {
+        return { ...item, description: FALLBACK_DESCRIPTION };
+    }
+    if (pdfSource) {
+        const pdfUrl = new URL(pdfSource, item.link).href;
+        $content.find('script').remove();
+        $content.append($('<iframe>').attr('src', pdfUrl));
+        $content.append($('<p>').append($('<a>').attr('href', pdfUrl).text('Download PDF')));
+    }
+
+    const title = $(selectors.title).text().trim();
+    const pubDate = selectors.date ? parsePubDate($(selectors.date).text()) : undefined;
+
+    return {
+        ...item,
+        title: title || item.title,
+        pubDate: pubDate ?? item.pubDate,
+        description: $content.html(),
+    };
+}
+
+export function resolveArticles(list: NoticeItem[], selectors: DetailSelectors): Promise<DataItem[]> {
+    return pMap(list, (item) => cache.tryGet(item.link, () => fetchArticle(item, selectors)), { concurrency: 3 });
+}

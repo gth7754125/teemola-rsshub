@@ -1,47 +1,36 @@
-import { Route } from '@/types';
-import cache from '@/utils/cache';
-import got from '@/utils/got';
-import { load } from 'cheerio';
-import { baseUrl, parseList, parseItems } from './utils';
+import type { Data, Route } from '@/types';
+import ofetch from '@/utils/ofetch';
+import { getRouteLimit } from '@/utils/route-limit';
 
-export const route: Route = {
-    path: ['/', '/category/:id{.+}', '/info', '/report', '/topic/:id'],
-    name: 'Unknown',
-    maintainers: ['TonyRL'],
-    handler,
-    url: 'tfc-taiwan.org.tw/articles/report',
-    url: 'tfc-taiwan.org.tw/articles/info',
-};
+import { baseUrl, parseItem, parsePost } from './utils';
 
-async function handler(ctx) {
-    const requestPath = ctx.req.path;
-    const isTopic = requestPath.startsWith('/topic/');
-    let link = baseUrl;
+const handler = async (ctx): Promise<Data> => {
+    const limit = Math.min(getRouteLimit(ctx, 10), 100);
 
-    if (isTopic) {
-        link += `/topic/${ctx.req.param('id')}`;
-    } else if (requestPath === '/') {
-        link += `/articles/report`;
-    } else {
-        link += `/articles${requestPath}`;
-    }
+    const pageResponse = await ofetch(`${baseUrl}/wp-json/wp/v2/pages/89173`);
+    const postsResponse = await parsePost(limit, undefined);
 
-    const { data: response } = await got(link);
-    const $ = load(response);
-
-    const list = $(`${isTopic ? '.view-grouping' : '.pane-clone-of-article'} .views-row-inner`)
-        .toArray()
-        .map((item) => parseList($(item)));
-
-    const items = await parseItems(list, cache.tryGet);
+    const pageInfo = pageResponse.yoast_head_json;
+    const image = pageInfo.og_image?.[0]?.url;
+    const items = parseItem(postsResponse);
 
     return {
-        title: $('head title').text(),
-        description: $('head meta[name="description"]').attr('content'),
-        image: $('head meta[property="og:image"]').attr('content'),
-        logo: $('head link[rel="shortcut icon"]').attr('href'),
-        icon: $('head link[rel="shortcut icon"]').attr('href'),
-        link,
+        title: pageInfo.title,
+        description: pageInfo.og_site_name,
+        image,
+        logo: image,
+        icon: image,
+        link: pageInfo.canonical,
+        language: 'zh-TW',
         item: items,
     };
-}
+};
+
+export const route: Route = {
+    name: '最新查核報告',
+    maintainers: ['TonyRL'],
+    example: '/tfc-taiwan',
+    path: '/',
+    handler,
+    url: 'tfc-taiwan.org.tw/latest-news/',
+};

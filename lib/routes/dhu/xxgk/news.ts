@@ -1,10 +1,16 @@
-import { Route } from '@/types';
-import got from '@/utils/got';
 import { load } from 'cheerio';
+import pMap from 'p-map';
+
+import type { Route } from '@/types';
+import cache from '@/utils/cache';
+import got from '@/utils/got';
 import { parseDate } from '@/utils/parse-date';
 import timezone from '@/utils/timezone';
 
-const base_url = 'https://xxgk.dhu.edu.cn/1737/list.htm';
+import { selectItems } from '../utils';
+
+const siteUrl = 'https://xxgk.dhu.edu.cn';
+const baseUrl = 'https://xxgk.dhu.edu.cn/1737/list.htm';
 
 export const route: Route = {
     path: '/xxgk/news',
@@ -25,25 +31,44 @@ export const route: Route = {
 };
 
 async function handler() {
-    const link = base_url;
-    const response = await got({
-        method: 'get',
-        url: link,
-        headers: {
-            Referer: base_url,
-        },
-    });
+    const link = baseUrl;
+    const { data: response } = await got(link);
 
-    const $ = load(response.data);
+    const $ = load(response);
+
+    const list = $('.cols_list > li')
+        .toArray()
+        .map((element) => {
+            const $item = $(element);
+            const colsTitle = $item.find('.cols_title > a');
+            return {
+                title: colsTitle.text(),
+                link: new URL(colsTitle.attr('href')!, siteUrl).href,
+                pubDate: timezone(parseDate($item.find('.cols_meta').text(), 'YYYY-MM-DD', 'zh-cn'), 8),
+            };
+        });
+
+    const items = await pMap(
+        selectItems(list),
+        (item) =>
+            cache.tryGet(item.link, async () => {
+                // Some article bodies are restricted to the university network.
+                let description: string;
+                try {
+                    const { data: response } = await got(item.link);
+                    const $ = load(response);
+                    description = $('.wp_articlecontent').html() ?? '';
+                } catch {
+                    description = '';
+                }
+                return { ...item, description };
+            }),
+        { concurrency: 3 }
+    );
+
     return {
-        link: base_url,
         title: '东华大学信息公开网-最新公开信息',
-        item: $('.cols')
-            .map((_, elem) => ({
-                link: new URL($('a', elem).attr('href'), base_url),
-                title: $('a', elem).attr('title'),
-                pubDate: timezone(parseDate($('.cols_meta', elem).text()), +8),
-            }))
-            .get(),
+        link,
+        item: items,
     };
 }

@@ -1,112 +1,76 @@
-import { Route } from '@/types';
-import got from '@/utils/got';
-import { parseDate } from '@/utils/parse-date';
-import { PROFILE_QUERY, REPLIES_QUERY, THREADS_QUERY, apiUrl, threadUrl, profileUrl, extractTokens, makeHeader, buildContent } from './utils';
+import { load } from 'cheerio';
+
+import type { Route } from '@/types';
+import { ViewType } from '@/types';
+import ofetch from '@/utils/ofetch';
+
+import { buildContent, extractProfile, extractThreadItems, getPubDate, parseRouteOptions, profileUrl, threadUrl } from './utils';
 
 export const route: Route = {
     path: '/:user/:routeParams?',
     categories: ['social-media'],
+    view: ViewType.SocialMedia,
     example: '/threads/zuck',
-    parameters: { user: 'Username', routeParams: 'Extra parameters, see the table below' },
-    features: {
-        requireConfig: false,
-        requirePuppeteer: false,
-        antiCrawler: false,
-        supportBT: false,
-        supportPodcast: false,
-        supportScihub: false,
+    parameters: {
+        user: 'Username',
+        routeParams: {
+            description: `Extra parameters, see the table below
+Specify options (in the format of query string) in parameter \`routeParams\` to control some extra features for threads
+
+| Key                            | Description                                                                                                                  | Accepts                | Defaults to |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------- | ----------- |
+| \`showAuthorInTitle\`            | Show author name in title                                                                                                    | \`0\`/\`1\`/\`true\`/\`false\` | \`true\`      |
+| \`showAuthorInDesc\`             | Show author name in description (RSS body)                                                                                   | \`0\`/\`1\`/\`true\`/\`false\` | \`true\`      |
+| \`showQuotedAuthorAvatarInDesc\` | Show avatar of quoted author in description (RSS body) (Not recommended if your RSS reader extracts images from description) | \`0\`/\`1\`/\`true\`/\`false\` | \`false\`     |
+| \`showAuthorAvatarInDesc\`       | Show avatar of author in description (RSS body) (Not recommended if your RSS reader extracts images from description)        | \`0\`/\`1\`/\`true\`/\`false\` | \`false\`    |
+| \`showEmojiForQuotesAndReply\`   | Use "🔁" instead of "QT", "↩️" instead of "Re"                                                                               | \`0\`/\`1\`/\`true\`/\`false\` | \`true\`      |
+| \`showQuotedInTitle\`            | Show quoted tweet in title                                                                                                   | \`0\`/\`1\`/\`true\`/\`false\` | \`true\`      |
+| \`replies\`                      | Show replies                                                                                                                 | \`0\`/\`1\`/\`true\`/\`false\` | \`false\`     |`,
+        },
     },
     name: 'User timeline',
-    maintainers: ['ninboy'],
+    maintainers: ['ninboy', 'pseudoyu'],
     handler,
-    description: `Specify options (in the format of query string) in parameter \`routeParams\` to control some extra features for threads
-
-  | Key                            | Description                                                                                                                  | Accepts                | Defaults to |
-  | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------- | ----------- |
-  | \`showAuthorInTitle\`            | Show author name in title                                                                                                    | \`0\`/\`1\`/\`true\`/\`false\` | \`true\`      |
-  | \`showAuthorInDesc\`             | Show author name in description (RSS body)                                                                                   | \`0\`/\`1\`/\`true\`/\`false\` | \`true\`      |
-  | \`showQuotedAuthorAvatarInDesc\` | Show avatar of quoted author in description (RSS body) (Not recommended if your RSS reader extracts images from description) | \`0\`/\`1\`/\`true\`/\`false\` | \`false\`     |
-  | \`showAuthorAvatarInDesc\`       | Show avatar of author in description (RSS body) (Not recommended if your RSS reader extracts images from description)        | \`0\`/\`1\`/\`true\`/\`false\` | \`falseP\`    |
-  | \`showEmojiForQuotesAndReply\`   | Use "🔁" instead of "QT", "↩️" instead of "Re"                                                                               | \`0\`/\`1\`/\`true\`/\`false\` | \`true\`      |
-  | \`showQuotedInTitle\`            | Show quoted tweet in title                                                                                                   | \`0\`/\`1\`/\`true\`/\`false\` | \`true\`      |
-  | \`replies\`                      | Show replies                                                                                                                 | \`0\`/\`1\`/\`true\`/\`false\` | \`true\`      |
-
-  Specify different option values than default values to improve readability. The URL
-
-  \`\`\`
-  https://rsshub.app/threads/zuck/showAuthorInTitle=1&showAuthorInDesc=1&showQuotedAuthorAvatarInDesc=1&showAuthorAvatarInDesc=1&showEmojiForQuotesAndReply=1&showQuotedInTitle=1
-  \`\`\``,
 };
 
 async function handler(ctx) {
-    const { user, routeParams } = ctx.req.param();
-    const { lsd, userId } = await extractTokens(user, ctx);
+    const { user: rawUser, routeParams } = ctx.req.param();
+    const user = rawUser.startsWith('@') ? rawUser.slice(1) : rawUser;
+    const options = parseRouteOptions(new URLSearchParams(routeParams));
 
-    const params = new URLSearchParams(routeParams);
-    const json = {
-        params: routeParams,
-    };
+    const response = await ofetch(options.replies ? `${profileUrl(user)}/replies` : profileUrl(user));
+    const $ = load(response);
 
-    const options = {
-        showAuthorInTitle: params.get('showAuthorInTitle') ?? true,
-        showAuthorInDesc: params.get('showAuthorInDesc') ?? true,
-        showAuthorAvatarInDesc: params.get('showAuthorAvatarInDesc') ?? false,
-        showQuotedInTitle: params.get('showQuotedInTitle') ?? true,
-        showQuotedAuthorAvatarInDesc: params.get('showQuotedAuthorAvatarInDesc') ?? false,
-        showEmojiForQuotesAndReply: params.get('showEmojiForQuotesAndReply') ?? true,
-        replies: params.get('replies') ?? false,
-    };
+    const threadsData = extractThreadItems($);
 
-    const { data: profileResponse } = await got.post(apiUrl, {
-        headers: makeHeader(user, lsd),
-        form: {
-            lsd,
-            variables: JSON.stringify({ userID: userId }),
-            doc_id: PROFILE_QUERY,
-        },
-    });
+    // A profile that has never posted still embeds its timeline with empty edges, so only a page without it is a failure
+    if (!threadsData.length && !$('script[data-sjs]:contains("mediaData")').text().includes('"mediaData":{"edges":[]')) {
+        throw new Error('Failed to fetch thread data');
+    }
 
-    const { data: threadsResponse, request: threadsRequest } = await got.post(apiUrl, {
-        headers: makeHeader(user, lsd),
-        form: {
-            lsd,
-            variables: JSON.stringify({ userID: userId }),
-            doc_id: options.replies ? REPLIES_QUERY : THREADS_QUERY,
-        },
-    });
+    const profile = extractProfile($);
 
-    json.profileData = profileResponse;
-    json.request = {
-        headers: threadsRequest.options.headers,
-        body: threadsRequest.options.body,
-    };
+    ctx.set('json', threadsData);
 
-    const userData = profileResponse?.data?.userData?.user || {};
-    const threads = threadsResponse?.data?.mediaData?.threads || [];
-
-    const items = threads.flatMap((thread) =>
-        thread.thread_items
-            .filter((item) => user === item.post.user?.username)
-            .map((item) => {
-                const { title, description } = buildContent(item, options);
-                return {
-                    author: user,
-                    title,
-                    description,
-                    pubDate: parseDate(item.post.taken_at, 'X'),
-                    link: threadUrl(item.post.code),
-                };
-            })
-    );
-
-    json.items = items;
-    ctx.set('json', json);
+    const items = threadsData
+        .filter((item) => user === item.post.user?.username)
+        .map((item) => {
+            const { title, description } = buildContent(item, options);
+            return {
+                author: user,
+                title,
+                description,
+                pubDate: getPubDate(item.post.taken_at),
+                link: threadUrl(item.post.code),
+            };
+        });
 
     return {
-        title: `${user} (@${user}) on Threads`,
+        title: `${profile?.full_name || user} (@${user}) on Threads`,
+        description: profile?.biography,
         link: profileUrl(user),
-        image: userData.hd_profile_pic_versions?.sort((a, b) => b.width - a.width)[0].url ?? userData.profile_pic_url,
-        description: userData.biography,
+        image: profile?.profile_pic_url ?? threadsData[0]?.post.user?.profile_pic_url,
         item: items,
+        allowEmpty: true,
     };
 }

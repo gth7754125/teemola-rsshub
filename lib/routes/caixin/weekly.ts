@@ -1,22 +1,15 @@
-import { Route } from '@/types';
+import { load } from 'cheerio';
+
+import type { DataItem, Route } from '@/types';
 import cache from '@/utils/cache';
 import got from '@/utils/got';
-import { load } from 'cheerio';
 import { parseDate } from '@/utils/parse-date';
+import { getRouteLimit } from '@/utils/route-limit';
 
 export const route: Route = {
     path: '/weekly',
     categories: ['traditional-media'],
     example: '/caixin/weekly',
-    parameters: {},
-    features: {
-        requireConfig: false,
-        requirePuppeteer: false,
-        antiCrawler: false,
-        supportBT: false,
-        supportPodcast: false,
-        supportScihub: false,
-    },
     radar: [
         {
             source: ['weekly.caixin.com/', 'weekly.caixin.com/*'],
@@ -38,29 +31,29 @@ async function handler(ctx) {
         ...$('.mi')
             .toArray()
             .map((item) => ({
-                link: $(item).find('a').attr('href'),
+                link: $(item).find('a').attr('href')?.replace('http:', 'https:'),
             })),
         ...$('.xsjCon a')
             .toArray()
             .map((item) => ({
                 link: $(item).attr('href'),
             })),
-    ].slice(0, ctx.req.query('limit') ? Number.parseInt(ctx.req.query('limit'), 10) : 10);
+    ].slice(0, getRouteLimit(ctx, 10));
 
     const items = await Promise.all(
         list.map((item) =>
-            cache.tryGet(item.link, async () => {
+            cache.tryGet<DataItem>(item.link!, async () => {
                 const { data } = await got(item.link);
                 const $ = load(data);
 
-                item.title = $('head title')
+                const title = $('head title')
                     .text()
                     .replace(/_财新周刊频道_财新网$/, '')
                     .trim();
-                item.pubDate = parseDate(
+                const pubDate = parseDate(
                     $('.source')
                         .text()
-                        .match(/出版日期：(\d{4}-\d{2}-\d{2})/)[1]
+                        .match(/出版日期：(\d{4}-\d{2}-\d{2})/)![1]
                 );
 
                 $('.subscribe').remove();
@@ -68,9 +61,9 @@ async function handler(ctx) {
                 const report = $('.report');
                 report.find('.title, .source, .date').remove();
 
-                item.description = $('.cover').html() + report.html() + $('.magIntro2').html();
+                const description = $('.cover').html()! + report.html()! + $('.magIntro2').html();
 
-                return item;
+                return { title, pubDate, description, link: item.link };
             })
         )
     );

@@ -1,10 +1,44 @@
-import { Route } from '@/types';
+import { type Cheerio, load } from 'cheerio';
+import { type AnyNode, cloneNode, Document } from 'domhandler';
+import pMap from 'p-map';
+
+import type { Data, DataItem, Route } from '@/types';
 import cache from '@/utils/cache';
-import { joinUrl } from './utils';
-import { parseDate } from '@/utils/parse-date';
-import { load } from 'cheerio';
 import got from '@/utils/got';
+import { parseDate } from '@/utils/parse-date';
 import timezone from '@/utils/timezone';
+
+import { joinUrl } from './utils';
+
+async function getArticle(link: string): Promise<Partial<DataItem>> {
+    const item: Partial<DataItem> = {};
+    const resp = await got.get(link);
+    const $ = load(resp.data);
+    if ($('.v_news_content').length) {
+        const content = $('.v_news_content');
+        content
+            .closest('form, .content_redhead')
+            .find('a[href*="DownloadAttachUrl"]')
+            .filter((_, elem) => !$(elem).closest('.v_news_content').length)
+            .each((_, elem) => {
+                const attachment = copyNodes($(elem));
+                content.append($('<p>').append(attachment));
+            });
+        item.description = content.html()!;
+        const date = $('#lbDate').text();
+        if (date.trim()) {
+            item.pubDate = timezone(parseDate(date, '更新时间：YYYY年MM月DD日'), 8);
+        }
+        const author = $('.detailShowAEA')
+            .text()
+            .match(/作者：([\s\S]*?)｜\s*编辑：/)?.[1]
+            .trim();
+        if (author) {
+            item.author = author;
+        }
+    }
+    return item;
+}
 
 export const route: Route = {
     path: '/dean/:code',
@@ -30,54 +64,30 @@ export const route: Route = {
     handler,
     url: 'swpu.edu.cn/',
     description: `| 栏目 | 通知公告 | 新闻报道 | 视点声音 |
-  | ---- | -------- | -------- | -------- |
-  | 代码 | tzgg     | xwbd     | sdsy     |`,
+| ---- | -------- | -------- | -------- |
+| 代码 | tzgg     | xwbd     | sdsy     |`,
 };
 
-async function handler(ctx) {
+async function handler(ctx): Promise<Data> {
     const url = `https://www.swpu.edu.cn/dean/${ctx.req.param('code')}.htm`;
 
     const res = await got.get(url);
     const $ = load(res.data);
 
-    let title = $('.r_list > h3').text();
-    title = title.substring(title.indexOf('：') + 1);
+    const currentTemplate = $('.list-right-column .list-ul').length > 0;
+    let title = currentTemplate ? $('title').text().split('-', 1)[0] : $('.r_list > h3').text();
+    title = title.slice(title.indexOf('：') + 1);
 
-    // 获取标题、时间及链接
-    const items = [];
-    $('.r_list > ul > li').each((i, elem) => {
-        items.push({
-            title: $('label:eq(0)', elem).text().trim(),
+    // Read the current first page, retaining support for the previous layout.
+    const items: DataItem[] = $(currentTemplate ? '.list-right-column .list-ul > li' : '.r_list > ul > li')
+        .toArray()
+        .map((elem) => ({
+            title: $(currentTemplate ? 'a' : 'label:eq(0)', elem).text(),
+            pubDate: currentTemplate && $('.list-date', elem).text().trim() ? timezone(parseDate($('.list-date', elem).text(), 'YYYY-MM-DD'), 8) : undefined,
             link: joinUrl('https://www.swpu.edu.cn/dean/', $('a', elem).attr('href')),
-        });
-    });
+        }));
 
-    // 请求全文
-    const out = await Promise.all(
-        items.map(async (item) => {
-            const $ = await cache.tryGet(item.link, async () => {
-                const res = await got.get(item.link);
-                return load(res.data);
-            });
-
-            if ($('title').text().startsWith('系统提示')) {
-                item.author = '系统';
-                item.description = '无权访问';
-            } else {
-                item.author = '教务处';
-                item.description = $('.v_news_content').html();
-                item.pubDate = timezone(parseDate($('#lbDate').text(), '更新时间：YYYY年MM月DD日'), +8);
-                for (const elem of $('.v_news_content p')) {
-                    if ($(elem).css('text-align') === 'right') {
-                        item.author = $(elem).text();
-                        break;
-                    }
-                }
-            }
-
-            return item;
-        })
-    );
+    const out = await pMap(items, async (item) => ({ ...item, ...(await cache.tryGet(`swpu:dean:article:v3:${item.link}`, () => getArticle(item.link!))) }), { concurrency: 3 });
 
     return {
         title: `西南石油大学教务处 ${title}`,
@@ -86,4 +96,13 @@ async function handler(ctx) {
         language: 'zh-CN',
         item: out,
     };
+}
+
+function copyNodes<T extends AnyNode>(selection: Cheerio<T>): Cheerio<T> {
+    const copy = selection.map((_, node) => cloneNode(node, true));
+    const root = new Document(copy.toArray());
+    for (const node of copy) {
+        node.parent = root;
+    }
+    return copy;
 }

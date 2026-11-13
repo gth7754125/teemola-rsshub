@@ -1,47 +1,76 @@
-import { Route } from '@/types';
-import cache from '@/utils/cache';
-import got from '@/utils/got';
 import { load } from 'cheerio';
 
-import { baseUrl, apiHost, parseEventDetail, parseItem } from './utils';
+import InvalidParameterError from '@/errors/types/invalid-parameter';
+import type { Route } from '@/types';
+import cache from '@/utils/cache';
+import ofetch from '@/utils/ofetch';
+
+import { apiHost, baseUrl, getTagsData, parseEventDetail, parseItem } from './utils';
 
 export const route: Route = {
-    path: ['/hub/:tagId/:sort?/:range?', '/hub/:tagId/:sort?', '/hub/:sort?'],
-    name: 'Unknown',
-    maintainers: [],
+    path: '/hub/:tagId?/:sort?/:range?',
+    categories: ['programming'],
+    example: '/baai/hub',
+    parameters: {
+        tagId: '社群 ID，可在 [社群页](https://hub.baai.ac.cn/taglist) 或 URL 中找到',
+        sort: '排序，见下表，默认为 `new`',
+        range: '时间跨度，仅在排序 `readCnt` 时有效',
+    },
+    description: `排序
+
+| 最新 | 最热    |
+| ---- | ------- |
+| new  | readCnt |
+
+时间跨度
+
+| 3 天 | 本周 | 本月 |
+| ---- | ---- | ---- |
+| 3    | 7    | 30   |`,
+    radar: [
+        {
+            source: ['hub.baai.ac.cn/'],
+            target: '/hub',
+        },
+    ],
+    name: '智源社区',
+    maintainers: ['TonyRL'],
     handler,
 };
 
 async function handler(ctx) {
-    const { tagId, sort = 'new', range } = ctx.req.param();
+    const { tagId = '', sort = 'new', range } = ctx.req.param();
 
     let title, description, brief, iconUrl;
     if (tagId) {
-        const { data } = await got(`${apiHost}/api/v1/tags`, {
-            searchParams: {
-                id: tagId,
-            },
-        });
-        title = data.data[0].title;
-        description = data.data[0].description;
-        brief = data.data[0].brief;
-        iconUrl = data.data[0].icon_url;
+        const tagsData: Array<{ id: number; title: string; description: string; brief: string; iconUrl: string }> = await getTagsData();
+
+        const tag = tagsData.find((tag) => String(tag.id) === tagId);
+        if (tag) {
+            title = tag.title;
+            description = tag.description;
+            brief = tag.brief;
+            iconUrl = tag.iconUrl;
+        } else {
+            throw new InvalidParameterError('Tag not found');
+        }
     }
 
-    const responses = await got.all(
-        Array.from(
-            {
-                // first 3 pages
-                length: (ctx.req.query('limit') ? Number.parseInt(ctx.req.query('limit'), 10) : 18) / 6,
-            },
-            (_, v) => `${apiHost}/api/v1/story/list?page=${v + 1}&sort=${sort}${tagId ? `&tag_id=${tagId}` : ''}${range ? `&time_range=${range}` : ''}`
-        ).map((url) => got.post(url))
-    );
+    const response = await ofetch(`${apiHost}/api/v1/story/list`, {
+        method: 'POST',
+        query: {
+            page: 1,
+            sort,
+            tag_id: tagId,
+            time_range: range,
+        },
+    });
 
-    const list = responses
-        .filter((response) => response.data.data)
-        .flatMap((response) => response.data.data)
-        .map((item) => parseItem(item));
+    if (!Array.isArray(response.data)) {
+        throw new TypeError(`BAAI Hub did not return an article list${tagId ? ` for tag ${tagId}` : ''}: ${response.message || 'check the source website and route parameters'}`);
+    }
+
+    const list = response.data.map((item) => parseItem(item));
 
     const items = await Promise.all(
         list.map((item) =>
@@ -49,7 +78,7 @@ async function handler(ctx) {
                 if (item.eventId) {
                     item.description = await parseEventDetail(item);
                 } else {
-                    const { data: response } = await got(item.link);
+                    const response = await ofetch(item.link);
                     const $ = load(response);
                     item.description = item.is_event ? $('div.box2').html() : $('.post-content').html();
                 }

@@ -1,5 +1,5 @@
-import { Route } from '@/types';
-import got from '@/utils/got';
+import type { Route } from '@/types';
+import ofetch from '@/utils/ofetch';
 import { parseDate } from '@/utils/parse-date';
 
 export const route: Route = {
@@ -19,7 +19,7 @@ export const route: Route = {
         supportPodcast: false,
         supportScihub: false,
     },
-    name: 'Trending Papers on arXiv',
+    name: 'arXiv paper ranking',
     maintainers: ['CookiePieWw'],
     handler,
 };
@@ -30,20 +30,15 @@ async function handler(ctx) {
     const rootUrl = 'https://trendingpapers.com';
     const currentUrl = `${rootUrl}/api/papers?p=1&o=pagerank_growth&pd=${time}&cc=${cited}&c=${category}`;
 
-    const response = await got({
-        method: 'get',
-        url: currentUrl,
-    });
+    const response = await ofetch(currentUrl);
 
-    const $ = response.data;
-
-    const papers = $.data.map((_) => {
+    const papers = response.data.map((_) => {
         const title = _.title;
         const abstract = _.abstract;
         const url = _.url;
         const arxivId = _.arxiv_id;
 
-        const pubDate = parseDate(_.pub_date);
+        const pubDate = _.pub_date ? parseDate(_.pub_date) : undefined;
         const summaryCategories = _.summary_categories;
 
         return {
@@ -58,8 +53,7 @@ async function handler(ctx) {
 
     return {
         title: `Trending Papers on arXiv.org | ${category} | ${time} | ${cited} | `,
-        link: currentUrl,
+        link: rootUrl,
         item: papers,
-        language: $('html').attr('lang'),
     };
 }

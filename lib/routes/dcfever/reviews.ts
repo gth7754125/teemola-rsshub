@@ -1,7 +1,8 @@
-import { Route } from '@/types';
-import cache from '@/utils/cache';
-import got from '@/utils/got';
 import { load } from 'cheerio';
+
+import type { Route } from '@/types';
+import ofetch from '@/utils/ofetch';
+
 import { baseUrl, parseItem } from './utils';
 
 export const route: Route = {
@@ -9,14 +10,6 @@ export const route: Route = {
     categories: ['new-media'],
     example: '/dcfever/reviews/cameras',
     parameters: { type: '分類，預設為 `cameras`' },
-    features: {
-        requireConfig: false,
-        requirePuppeteer: false,
-        antiCrawler: false,
-        supportBT: false,
-        supportPodcast: false,
-        supportScihub: false,
-    },
     radar: [
         {
             source: ['dcfever.com/:type/reviews.php'],
@@ -27,31 +20,33 @@ export const route: Route = {
     maintainers: ['TonyRL'],
     handler,
     description: `| 相機及鏡頭 | 手機平板 | 試車報告 |
-  | ---------- | -------- | -------- |
-  | cameras    | phones   | cars     |`,
+| ---------- | -------- | -------- |
+| cameras    | phones   | cars     |`,
 };
 
 async function handler(ctx) {
     const { type = 'cameras' } = ctx.req.param();
 
-    const response = await got(`${baseUrl}/${type}/reviews.php`);
-    const $ = load(response.data);
+    const link = `${baseUrl}/${type}/reviews.php`;
+    const response = await ofetch(link);
+    const $ = load(response);
 
     const list = $('.col-md-left .title a')
         .toArray()
         .map((item) => {
-            item = $(item);
+            const $item = $(item);
             return {
-                title: item.text(),
-                link: new URL(item.attr('href'), response.url).href,
+                title: $item.text(),
+                link: new URL($item.attr('href')!, link).href,
             };
-        });
+        })
+        .filter((item, index, arr) => arr.findIndex((i) => i.link === item.link) === index);
 
-    const items = await Promise.all(list.map((item) => parseItem(item, cache.tryGet)));
+    const items = await Promise.all(list.map((item) => parseItem(item)));
 
     return {
         title: $('head title').text(),
-        link: response.url,
+        link,
         image: 'https://cdn10.dcfever.com/images/android_192.png',
         item: items,
     };

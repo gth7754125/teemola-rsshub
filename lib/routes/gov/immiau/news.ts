@@ -1,4 +1,4 @@
-import { Route } from '@/types';
+import type { Route } from '@/types';
 import got from '@/utils/got';
 import { parseDate } from '@/utils/parse-date';
 
@@ -20,7 +20,7 @@ const reqBodyByYear = (year) => ({
 const getItemUrl = (id) => `https://immi.homeaffairs.gov.au/news-media/archive/article?itemId=${id}`;
 
 export const route: Route = {
-    path: '/immiau/news',
+    path: '/news',
     categories: ['government'],
     example: '/gov/immiau/news',
     parameters: {},
@@ -38,18 +38,18 @@ export const route: Route = {
 };
 
 async function handler() {
-    const res = await got({
+    const { data: res } = await got({
         method: 'post',
         url,
         json: reqBodyByYear(new Date().getFullYear()),
-    }).json();
+    });
 
     const list = res.d.data.map((item) => ({
         title: item.Title,
         author: item.Source,
         category: item.Category,
         description: item.Content,
-        pubDate: parseDate(item.Date),
+        pubDate: item.Date ? parseDate(`${item.Date} +0000`, 'DD MMM YYYY ZZ') : undefined,
         link: getItemUrl(item.Id),
     }));
 

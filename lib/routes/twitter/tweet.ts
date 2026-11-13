@@ -1,7 +1,9 @@
-import { Route } from '@/types';
+import { config } from '@/config';
+import type { Route } from '@/types';
+import { fallback, queryToBoolean } from '@/utils/readable-social';
+
 import api from './api';
 import utils from './utils';
-import { fallback, queryToBoolean } from '@/utils/readable-social';
 
 export const route: Route = {
     path: '/tweet/:id/status/:status/:original?',
@@ -14,14 +16,14 @@ export const route: Route = {
     },
     features: {
         requireConfig: [
-            {
-                name: 'TWITTER_USERNAME',
-                description: 'Please see above for details.',
-            },
-            {
-                name: 'TWITTER_PASSWORD',
-                description: 'Please see above for details.',
-            },
+            // {
+            //     name: 'TWITTER_USERNAME',
+            //     description: 'Please see above for details.',
+            // },
+            // {
+            //     name: 'TWITTER_PASSWORD',
+            //     description: 'Please see above for details.',
+            // },
         ],
         requirePuppeteer: false,
         antiCrawler: false,
@@ -39,18 +41,27 @@ async function handler(ctx) {
     const status = ctx.req.param('status');
     const routeParams = new URLSearchParams(ctx.req.param('original'));
     const original = fallback(undefined, queryToBoolean(routeParams.get('original')), false);
-    const params = { focalTweetId: status };
+    const params = {
+        focalTweetId: status,
+        with_rux_injections: false,
+        includePromotedContent: true,
+        withCommunity: true,
+        withQuickPromoteEligibilityTweetFields: true,
+        withBirdwatchNotes: true,
+        withVoice: true,
+        withV2Timeline: true,
+    };
     await api.init();
     const userInfo = await api.getUser(id);
     const data = await api.getUserTweet(id, params);
-    const profileImageUrl = userInfo.profile_image_url || userInfo.profile_image_url_https;
+    const profileImageUrl = userInfo!.profile_image_url || userInfo!.profile_image_url_https;
     const item = original && config.isPackage ? data : utils.ProcessFeed(ctx, { data });
 
     return {
-        title: `Twitter @${userInfo.name}`,
-        link: `https://twitter.com/${userInfo.screen_name}/status/${status}`,
+        title: `Twitter @${userInfo!.name}`,
+        link: `https://x.com/${userInfo!.screen_name}/status/${status}`,
         image: profileImageUrl.replace(/_normal.jpg$/, '.jpg'),
-        description: userInfo.description,
+        description: userInfo!.description,
         item,
     };
 }

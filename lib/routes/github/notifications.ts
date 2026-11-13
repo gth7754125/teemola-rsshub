@@ -1,16 +1,15 @@
-import { Route } from '@/types';
-import got from '@/utils/got';
+import { config } from '@/config';
+import ConfigNotFoundError from '@/errors/types/config-not-found';
+import type { Route } from '@/types';
+import ofetch from '@/utils/ofetch';
 import { parseDate } from '@/utils/parse-date';
 
 const apiUrl = 'https://api.github.com';
-import { config } from '@/config';
-import ConfigNotFoundError from '@/errors/types/config-not-found';
 
 export const route: Route = {
     path: '/notifications',
     categories: ['programming'],
     example: '/github/notifications',
-    parameters: {},
     features: {
         requireConfig: [
             {
@@ -18,11 +17,6 @@ export const route: Route = {
                 description: '',
             },
         ],
-        requirePuppeteer: false,
-        antiCrawler: false,
-        supportBT: false,
-        supportPodcast: false,
-        supportScihub: false,
     },
     radar: [
         {
@@ -37,7 +31,7 @@ export const route: Route = {
 
 async function handler(ctx) {
     if (!config.github || !config.github.access_token) {
-        throw new ConfigNotFoundError('GitHub trending RSS is disabled due to the lack of <a href="https://docs.rsshub.app/deploy/config#route-specific-configurations">relevant config</a>');
+        throw new ConfigNotFoundError('GitHub notification RSS is disabled due to the lack of <a href="https://docs.rsshub.app/deploy/config#route-specific-configurations">relevant config</a>');
     }
     const headers = {
         Accept: 'application/vnd.github.v3+json',
@@ -45,15 +39,17 @@ async function handler(ctx) {
         'X-GitHub-Api-Version': '2022-11-28',
     };
 
-    const response = await got(`${apiUrl}/notifications`, {
+    const response = await ofetch.raw(`${apiUrl}/notifications`, {
         headers,
     });
-    const notifications = response.data;
+    const notifications = response._data;
 
     const items = notifications.map((item) => {
         let originUrl = item.subject.url ? item.subject.url.replace('https://api.github.com/repos/', 'https://github.com/') : 'https://github.com/notifications';
         if (originUrl.includes('/releases/')) {
             originUrl = originUrl.replace(/\/releases\/\d+$/, '/releases');
+        } else if (originUrl.includes('/pulls/')) {
+            originUrl = originUrl.replace(/\/pulls\/(\d+)$/, '/pull/$1');
         }
         return {
             title: item.subject.title,
@@ -64,21 +60,22 @@ async function handler(ctx) {
         };
     });
 
+    const resetTimestamp = Number.parseInt(response.headers.get('x-ratelimit-reset') ?? '');
+    ctx.set('json', {
+        title: 'Github Notifications',
+        item: notifications,
+        rateLimit: {
+            limit: Number.parseInt(response.headers.get('x-ratelimit-limit') ?? ''),
+            remaining: Number.parseInt(response.headers.get('x-ratelimit-remaining') ?? ''),
+            reset: parseDate(resetTimestamp, 'X'),
+            resoure: response.headers.get('x-ratelimit-resource'),
+            used: Number.parseInt(response.headers.get('x-ratelimit-used') ?? ''),
+        },
+    });
+
     return {
         title: 'Github Notifications',
         link: 'https://github.com/notifications',
         item: items,
     };
-
-    ctx.set('json', {
-        title: 'Github Notifications',
-        item: notifications,
-        rateLimit: {
-            limit: Number.parseInt(response.headers['X-RateLimit-Limit']),
-            remaining: Number.parseInt(response.headers['X-RateLimit-Remaining']),
-            reset: parseDate(Number.parseInt(response.headers['X-RateLimit-Reset']) * 1000),
-            resoure: response.headers['X-RateLimit-Resource'],
-            used: Number.parseInt(response.headers['X-RateLimit-Used']),
-        },
-    });
 }
